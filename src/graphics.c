@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+#include <stdlib.h>
 
 /* ---- Internal framebuffer ---- */
 static u32 __attribute__((aligned(16))) g_list[262144];
@@ -132,7 +133,6 @@ void draw_text_center(int y, u32 color, const char *text) {
 }
 
 void draw_text_large(int x, int y, u32 color, const char *text) {
-    /* 2x scaled text */
     const char *p = text;
     int cx = x;
     while (*p) {
