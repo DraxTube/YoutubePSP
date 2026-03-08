@@ -11,7 +11,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     container:
-      image: pspdev/pspdev:latest   # Official PSPDEV Docker image with full toolchain
+      image: pspdev/pspdev:latest
 
     steps:
       - name: Checkout repository
@@ -19,8 +19,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          apk add --no-cache make git bash python3 || \
-          apt-get update && apt-get install -y make git bash python3 imagemagick || true
+          apk add --no-cache make git bash python3 zip || \
+          apt-get update && apt-get install -y make git bash python3 zip || true
 
       - name: Verify PSPSDK
         run: |
@@ -31,7 +31,6 @@ jobs:
       - name: Generate placeholder assets (if missing)
         run: |
           mkdir -p assets
-          # Create a minimal 144x80 PNG icon (ICON0) if not present
           if [ ! -f assets/ICON0.PNG ]; then
             python3 - <<'PYEOF'
           import struct, zlib
@@ -42,7 +41,6 @@ jobs:
               ihdr_data = struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)
               ihdr = b'IHDR' + ihdr_data
               ihdr_chunk = u32be(len(ihdr_data)) + ihdr + u32be(zlib.crc32(ihdr) & 0xffffffff)
-
               raw = b''
               for y in range(h):
                   row = b'\x00'
@@ -76,7 +74,6 @@ jobs:
           mkdir -p release/PSP/GAME/PSPTube
           cp EBOOT.PBP release/PSP/GAME/PSPTube/
           cp README.md release/PSP/GAME/PSPTube/ 2>/dev/null || true
-          # Default config
           cat > release/PSP/GAME/PSPTube/config.txt <<EOF
           proxy_host=192.168.1.100
           proxy_port=8080
