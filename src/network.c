@@ -18,8 +18,28 @@ int network_init(void) {
 
     /* Controlla switch WLAN fisico */
     if (sceWlanGetSwitchState() == 0)
-        return -0xDEAD; /* switch spento */
+        return -0xDEAD;
 
+    /* === Carica i moduli di rete (OBBLIGATORIO su PSP) === */
+    ret = sceUtilityLoadNetModule(PSP_NET_MODULE_COMMON);
+    if (ret < 0) return ret;
+
+    ret = sceUtilityLoadNetModule(PSP_NET_MODULE_INET);
+    if (ret < 0) return ret;
+
+    ret = sceUtilityLoadNetModule(PSP_NET_MODULE_PARSEURI);
+    if (ret < 0) return ret;
+
+    ret = sceUtilityLoadNetModule(PSP_NET_MODULE_PARSEHTTP);
+    if (ret < 0) return ret;
+
+    ret = sceUtilityLoadNetModule(PSP_NET_MODULE_HTTP);
+    if (ret < 0) return ret;
+
+    ret = sceUtilityLoadNetModule(PSP_NET_MODULE_SSL);
+    if (ret < 0) return ret;
+
+    /* === Inizializza lo stack di rete === */
     ret = sceNetInit(128 * 1024, 42, 4096, 42, 4096);
     if (ret < 0) return ret;
 
@@ -47,34 +67,39 @@ void network_shutdown(void) {
     sceNetApctlTerm();
     sceNetInetTerm();
     sceNetTerm();
+    /* Scarica i moduli */
+    sceUtilityUnloadNetModule(PSP_NET_MODULE_SSL);
+    sceUtilityUnloadNetModule(PSP_NET_MODULE_HTTP);
+    sceUtilityUnloadNetModule(PSP_NET_MODULE_PARSEHTTP);
+    sceUtilityUnloadNetModule(PSP_NET_MODULE_PARSEURI);
+    sceUtilityUnloadNetModule(PSP_NET_MODULE_INET);
+    sceUtilityUnloadNetModule(PSP_NET_MODULE_COMMON);
     g_net_init = 0;
     g_connected = 0;
 }
 
-/* Prova tutti e 3 gli slot WiFi salvati sulla PSP */
 int network_connect(void) {
     int slot, ret, state, timeout;
 
     for (slot = 1; slot <= 3; slot++) {
         ret = sceNetApctlConnect(slot);
-        if (ret < 0) continue; /* slot vuoto, prova il prossimo */
+        if (ret < 0) continue;
 
         timeout = 0;
-        while (timeout < 60) { /* 30 secondi max per slot */
+        while (timeout < 60) {
             ret = sceNetApctlGetState(&state);
             if (ret < 0) break;
             if (state == PSP_NET_APCTL_STATE_GOT_IP) {
                 g_connected = 1;
-                return slot; /* ritorna lo slot usato */
+                return slot;
             }
-            sceKernelDelayThread(500000); /* 0.5s */
+            sceKernelDelayThread(500000);
             timeout++;
         }
-        /* timeout su questo slot, disconnetti e prova il prossimo */
         sceNetApctlDisconnect();
         sceKernelDelayThread(500000);
     }
-    return -1; /* nessuno slot funziona */
+    return -1;
 }
 
 int network_disconnect(void) {
