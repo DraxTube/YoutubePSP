@@ -230,10 +230,3 @@ void url_encode(const char *src, char *dst, int dst_size) {
     }
     dst[i] = '\0';
 }
-```
-
----
-
-Dopo aver avviato e ricevuto l'errore, spegni la PSP, metti la Memory Stick sul PC e apri il file:
-```
-PSP/GAME/PSPTube/debug.log
