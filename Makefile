@@ -16,7 +16,7 @@ LIBS   = -lpsphttp -lpspssl \
          -lpspmpeg \
          -lpspaudio \
          -lpspgu -lpspge -lpspdisplay \
-         -lpspctrl -lpsppower \
+         -lpspctrl -lpspwlan -lpsppower \
          -lpspsdk -lc -lm \
          -lpspdebug
 
