@@ -1,4 +1,5 @@
 #include "network.h"
+#include <pspkernel.h>
 #include <pspnet.h>
 #include <pspnet_inet.h>
 #include <pspnet_apctl.h>
@@ -35,8 +36,8 @@ int network_init(void) {
 
 void network_shutdown(void) {
     if (!g_net_init) return;
-    sceSslTerm();
-    sceHttpTerm();
+    sceSslEnd();
+    sceHttpEnd();
     sceNetApctlTerm();
     sceNetInetTerm();
     sceNetTerm();
@@ -44,12 +45,10 @@ void network_shutdown(void) {
     g_connected = 0;
 }
 
-/* Connect using the first saved WiFi configuration */
 int network_connect(void) {
     int ret, state;
     int timeout = 0;
 
-    /* Try connection index 1 first (can be changed in config) */
     ret = sceNetApctlConnect(1);
     if (ret < 0) return ret;
 
@@ -60,7 +59,7 @@ int network_connect(void) {
             g_connected = 1;
             return 0;
         }
-        sceKernelDelayThread(500000); /* 0.5s */
+        sceKernelDelayThread(500000);
         timeout++;
     }
     return -1;
@@ -87,13 +86,13 @@ int http_get(const char *url, char *buf, int buf_size) {
     sceHttpSetRecvTimeOut(template_id, 10000000);
     sceHttpSetSendTimeOut(template_id, 10000000);
 
-    conn_id = sceHttpCreateConnectionWithURL(template_id, url, 0);
+    conn_id = sceHttpCreateConnectionWithURL(template_id, (char*)url, 0);
     if (conn_id < 0) {
         sceHttpDeleteTemplate(template_id);
         return conn_id;
     }
 
-    req_id = sceHttpCreateRequestWithURL(conn_id, PSP_HTTP_METHOD_GET, url, 0);
+    req_id = sceHttpCreateRequestWithURL(conn_id, PSP_HTTP_METHOD_GET, (char*)url, 0);
     if (req_id < 0) {
         sceHttpDeleteConnection(conn_id);
         sceHttpDeleteTemplate(template_id);
@@ -106,7 +105,6 @@ int http_get(const char *url, char *buf, int buf_size) {
     ret = sceHttpGetStatusCode(req_id, &status);
     if (ret < 0 || status != 200) { ret = -status; goto cleanup; }
 
-    /* Read response */
     while (total < buf_size - 1) {
         int n = sceHttpReadData(req_id, buf + total, buf_size - total - 1);
         if (n <= 0) break;
