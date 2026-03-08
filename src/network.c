@@ -13,49 +13,91 @@
 static int g_net_init = 0;
 static int g_connected = 0;
 
+/* ---- Debug log ---- */
+#define LOG_FILE "ms0:/PSP/GAME/PSPTube/debug.log"
+
+static FILE *g_log = NULL;
+
+static void log_open(void) {
+    g_log = fopen(LOG_FILE, "w");
+}
+
+static void log_close(void) {
+    if (g_log) { fclose(g_log); g_log = NULL; }
+}
+
+static void log_write(const char *msg, int code) {
+    if (!g_log) return;
+    fprintf(g_log, "%s -> 0x%08X (%d)\n", msg, (unsigned int)code, code);
+    fflush(g_log);
+}
+
 int network_init(void) {
     int ret;
 
-    /* Controlla switch WLAN fisico */
-    if (sceWlanGetSwitchState() == 0)
-        return -0xDEAD;
+    log_open();
+    log_write("=== network_init START ===", 0);
 
-    /* === Carica i moduli di rete (OBBLIGATORIO su PSP) === */
+    /* Switch WLAN fisico */
+    int wlan = sceWlanGetSwitchState();
+    log_write("sceWlanGetSwitchState", wlan);
+    if (wlan == 0) {
+        log_write("ERRORE: switch WLAN spento", -1);
+        log_close();
+        return -0xDEAD;
+    }
+
+    /* Carica moduli rete */
     ret = sceUtilityLoadNetModule(PSP_NET_MODULE_COMMON);
-    if (ret < 0) return ret;
+    log_write("LoadNetModule COMMON", ret);
+    if (ret < 0 && ret != 0x80110902) { /* 0x80110902 = gia caricato */
+        log_close(); return ret;
+    }
 
     ret = sceUtilityLoadNetModule(PSP_NET_MODULE_INET);
-    if (ret < 0) return ret;
+    log_write("LoadNetModule INET", ret);
+    if (ret < 0 && ret != 0x80110902) { log_close(); return ret; }
 
     ret = sceUtilityLoadNetModule(PSP_NET_MODULE_PARSEURI);
-    if (ret < 0) return ret;
+    log_write("LoadNetModule PARSEURI", ret);
+    if (ret < 0 && ret != 0x80110902) { log_close(); return ret; }
 
     ret = sceUtilityLoadNetModule(PSP_NET_MODULE_PARSEHTTP);
-    if (ret < 0) return ret;
+    log_write("LoadNetModule PARSEHTTP", ret);
+    if (ret < 0 && ret != 0x80110902) { log_close(); return ret; }
 
     ret = sceUtilityLoadNetModule(PSP_NET_MODULE_HTTP);
-    if (ret < 0) return ret;
+    log_write("LoadNetModule HTTP", ret);
+    if (ret < 0 && ret != 0x80110902) { log_close(); return ret; }
 
     ret = sceUtilityLoadNetModule(PSP_NET_MODULE_SSL);
-    if (ret < 0) return ret;
+    log_write("LoadNetModule SSL", ret);
+    /* SSL puo non essere disponibile su tutti i CFW, continuiamo comunque */
 
-    /* === Inizializza lo stack di rete === */
+    /* Stack di rete */
     ret = sceNetInit(128 * 1024, 42, 4096, 42, 4096);
-    if (ret < 0) return ret;
+    log_write("sceNetInit", ret);
+    if (ret < 0) { log_close(); return ret; }
 
     ret = sceNetInetInit();
-    if (ret < 0) { sceNetTerm(); return ret; }
+    log_write("sceNetInetInit", ret);
+    if (ret < 0) { sceNetTerm(); log_close(); return ret; }
 
     ret = sceNetApctlInit(0x8000, 48);
-    if (ret < 0) { sceNetInetTerm(); sceNetTerm(); return ret; }
+    log_write("sceNetApctlInit", ret);
+    if (ret < 0) { sceNetInetTerm(); sceNetTerm(); log_close(); return ret; }
 
     ret = sceHttpInit(256 * 1024);
-    if (ret < 0) return ret;
+    log_write("sceHttpInit", ret);
+    if (ret < 0) { log_close(); return ret; }
 
     ret = sceSslInit(0x28000);
-    if (ret < 0) return ret;
+    log_write("sceSslInit", ret);
+    /* non fatale se SSL fallisce */
 
+    log_write("=== network_init OK ===", 0);
     g_net_init = 1;
+    log_close();
     return 0;
 }
 
@@ -67,7 +109,6 @@ void network_shutdown(void) {
     sceNetApctlTerm();
     sceNetInetTerm();
     sceNetTerm();
-    /* Scarica i moduli */
     sceUtilityUnloadNetModule(PSP_NET_MODULE_SSL);
     sceUtilityUnloadNetModule(PSP_NET_MODULE_HTTP);
     sceUtilityUnloadNetModule(PSP_NET_MODULE_PARSEHTTP);
@@ -81,16 +122,29 @@ void network_shutdown(void) {
 int network_connect(void) {
     int slot, ret, state, timeout;
 
+    log_open();
+    log_write("=== network_connect START ===", 0);
+
     for (slot = 1; slot <= 3; slot++) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "sceNetApctlConnect slot %d", slot);
         ret = sceNetApctlConnect(slot);
+        log_write(msg, ret);
         if (ret < 0) continue;
 
         timeout = 0;
         while (timeout < 60) {
             ret = sceNetApctlGetState(&state);
-            if (ret < 0) break;
+            if (ret < 0) {
+                log_write("sceNetApctlGetState error", ret);
+                break;
+            }
+            snprintf(msg, sizeof(msg), "  stato slot %d timeout %d", slot, timeout);
+            log_write(msg, state);
             if (state == PSP_NET_APCTL_STATE_GOT_IP) {
+                log_write("=== CONNESSO! ===", slot);
                 g_connected = 1;
+                log_close();
                 return slot;
             }
             sceKernelDelayThread(500000);
@@ -99,6 +153,9 @@ int network_connect(void) {
         sceNetApctlDisconnect();
         sceKernelDelayThread(500000);
     }
+
+    log_write("=== TUTTI GLI SLOT FALLITI ===", -1);
+    log_close();
     return -1;
 }
 
@@ -173,3 +230,10 @@ void url_encode(const char *src, char *dst, int dst_size) {
     }
     dst[i] = '\0';
 }
+```
+
+---
+
+Dopo aver avviato e ricevuto l'errore, spegni la PSP, metti la Memory Stick sul PC e apri il file:
+```
+PSP/GAME/PSPTube/debug.log
