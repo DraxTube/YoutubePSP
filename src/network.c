@@ -47,31 +47,25 @@ int network_init(void) {
         return -0xDEAD;
     }
 
-    /* Carica moduli rete */
+    /* Carica moduli rete - solo quelli necessari */
     ret = sceUtilityLoadNetModule(PSP_NET_MODULE_COMMON);
     log_write("LoadNetModule COMMON", ret);
-    if (ret < 0 && ret != 0x80110902) { /* 0x80110902 = gia caricato */
-        log_close(); return ret;
-    }
+    if (ret < 0 && ret != (int)0x80110902) { log_close(); return ret; }
 
     ret = sceUtilityLoadNetModule(PSP_NET_MODULE_INET);
     log_write("LoadNetModule INET", ret);
-    if (ret < 0 && ret != 0x80110902) { log_close(); return ret; }
+    if (ret < 0 && ret != (int)0x80110902) { log_close(); return ret; }
 
-    ret = sceUtilityLoadNetModule(PSP_NET_MODULE_PARSEURI);
-    log_write("LoadNetModule PARSEURI", ret);
-    if (ret < 0 && ret != 0x80110902) { log_close(); return ret; }
-
-    ret = sceUtilityLoadNetModule(PSP_NET_MODULE_PARSEHTTP);
-    log_write("LoadNetModule PARSEHTTP", ret);
-    if (ret < 0 && ret != 0x80110902) { log_close(); return ret; }
+    /* PARSEURI e PARSEHTTP non esistono su tutti i CFW, li saltiamo */
+    sceUtilityLoadNetModule(PSP_NET_MODULE_PARSEURI);
+    sceUtilityLoadNetModule(PSP_NET_MODULE_PARSEHTTP);
 
     ret = sceUtilityLoadNetModule(PSP_NET_MODULE_HTTP);
     log_write("LoadNetModule HTTP", ret);
-    if (ret < 0 && ret != 0x80110902) { log_close(); return ret; }
+    if (ret < 0 && ret != (int)0x80110902) { log_close(); return ret; }
 
-    ret = sceUtilityLoadNetModule(PSP_NET_MODULE_SSL);
-    log_write("LoadNetModule SSL", ret);
+    sceUtilityLoadNetModule(PSP_NET_MODULE_SSL);
+    log_write("LoadNetModule SSL (opzionale)", 0);
     /* SSL puo non essere disponibile su tutti i CFW, continuiamo comunque */
 
     /* Stack di rete */
