@@ -1,100 +1,80 @@
 #include "graphics.h"
-#include <pspgu.h>
 #include <pspdisplay.h>
-#include <pspgum.h>
+#include <pspkernel.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
 #include <stdlib.h>
 
-/* ---- Internal framebuffer ---- */
-static u32 __attribute__((aligned(16))) g_list[262144];
-static u8 *g_vram_base = (u8*)0x04000000;
-static int g_frame = 0;
-
-/* Simple 8x8 bitmap font (ASCII 32-127) */
 #include "font8x8.h"
 
+/* Due framebuffer in VRAM per il double buffering */
+#define FB0_ADDR  0x04000000
+#define FB1_ADDR  (0x04000000 + SCREEN_STRIDE * SCREEN_HEIGHT * 4)
+
+static u32 *g_draw_buf = (u32*)FB0_ADDR;
+static u32 *g_disp_buf = (u32*)FB1_ADDR;
+
 void graphics_init(void) {
-    sceGuInit();
-    sceGuStart(GU_DIRECT, g_list);
-
-    sceGuDrawBuffer(GU_PSM_8888, (void*)0, SCREEN_STRIDE);
-    sceGuDispBuffer(SCREEN_WIDTH, SCREEN_HEIGHT, (void*)(SCREEN_STRIDE * SCREEN_HEIGHT * 4), SCREEN_STRIDE);
-    sceGuDepthBuffer((void*)(SCREEN_STRIDE * SCREEN_HEIGHT * 8), SCREEN_STRIDE);
-
-    sceGuOffset(2048 - (SCREEN_WIDTH / 2), 2048 - (SCREEN_HEIGHT / 2));
-    sceGuViewport(2048, 2048, SCREEN_WIDTH, SCREEN_HEIGHT);
-    sceGuDepthRange(65535, 0);
-
-    sceGuScissor(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
-    sceGuEnable(GU_SCISSOR_TEST);
-    sceGuDisable(GU_DEPTH_TEST);
-    sceGuDisable(GU_BLEND);
-    sceGuShadeModel(GU_FLAT);
-
-    sceGuFinish();
-    sceGuSync(0, 0);
-    sceDisplayWaitVblankStart();
-    sceGuDisplay(GU_TRUE);
+    sceDisplaySetMode(0, SCREEN_WIDTH, SCREEN_HEIGHT);
+    sceDisplaySetFrameBuf((void*)FB0_ADDR, SCREEN_STRIDE,
+                          PSP_DISPLAY_PIXEL_FORMAT_8888,
+                          PSP_DISPLAY_SETBUF_IMMEDIATE);
+    graphics_clear(COLOR_BLACK);
+    graphics_flip();
+    graphics_clear(COLOR_BLACK);
 }
 
 void graphics_shutdown(void) {
-    sceGuTerm();
-}
-
-static u32 *get_vram_addr(int frame) {
-    if (frame == 0)
-        return (u32*)(g_vram_base);
-    else
-        return (u32*)(g_vram_base + SCREEN_STRIDE * SCREEN_HEIGHT * 4);
+    /* nulla da fare */
 }
 
 void graphics_clear(u32 color) {
-    u32 *fb = get_vram_addr(g_frame);
     int i;
     for (i = 0; i < SCREEN_STRIDE * SCREEN_HEIGHT; i++)
-        fb[i] = color;
+        g_draw_buf[i] = color;
 }
 
 void graphics_flip(void) {
     sceDisplayWaitVblankStart();
-    sceDisplaySetFrameBuf(get_vram_addr(g_frame),
-                          SCREEN_STRIDE, PSP_DISPLAY_PIXEL_FORMAT_8888,
+    sceDisplaySetFrameBuf((void*)g_draw_buf, SCREEN_STRIDE,
+                          PSP_DISPLAY_PIXEL_FORMAT_8888,
                           PSP_DISPLAY_SETBUF_NEXTFRAME);
-    g_frame ^= 1;
+    /* swap */
+    u32 *tmp  = g_disp_buf;
+    g_disp_buf = g_draw_buf;
+    g_draw_buf  = tmp;
 }
 
 void draw_pixel(int x, int y, u32 color) {
     if (x < 0 || x >= SCREEN_WIDTH || y < 0 || y >= SCREEN_HEIGHT) return;
-    u32 *fb = get_vram_addr(g_frame);
-    fb[y * SCREEN_STRIDE + x] = color;
+    g_draw_buf[y * SCREEN_STRIDE + x] = color;
 }
 
 void draw_rect_filled(int x, int y, int w, int h, u32 color) {
     int i, j;
-    u32 *fb = get_vram_addr(g_frame);
-    for (j = y; j < y + h; j++) {
-        if (j < 0 || j >= SCREEN_HEIGHT) continue;
-        for (i = x; i < x + w; i++) {
-            if (i < 0 || i >= SCREEN_WIDTH) continue;
-            fb[j * SCREEN_STRIDE + i] = color;
-        }
-    }
+    int x1 = x + w, y1 = y + h;
+    if (x  < 0) x  = 0;
+    if (y  < 0) y  = 0;
+    if (x1 > SCREEN_WIDTH)  x1 = SCREEN_WIDTH;
+    if (y1 > SCREEN_HEIGHT) y1 = SCREEN_HEIGHT;
+    for (j = y; j < y1; j++)
+        for (i = x; i < x1; i++)
+            g_draw_buf[j * SCREEN_STRIDE + i] = color;
 }
 
 void draw_rect(int x, int y, int w, int h, u32 color) {
-    draw_rect_filled(x, y, w, 1, color);
-    draw_rect_filled(x, y + h - 1, w, 1, color);
-    draw_rect_filled(x, y, 1, h, color);
-    draw_rect_filled(x + w - 1, y, 1, h, color);
+    draw_rect_filled(x,         y,         w, 1, color);
+    draw_rect_filled(x,         y + h - 1, w, 1, color);
+    draw_rect_filled(x,         y,         1, h, color);
+    draw_rect_filled(x + w - 1, y,         1, h, color);
 }
 
 void draw_line(int x0, int y0, int x1, int y1, u32 color) {
-    int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
-    int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+    int dx = abs(x1-x0), sx = x0 < x1 ? 1 : -1;
+    int dy = -abs(y1-y0), sy = y0 < y1 ? 1 : -1;
     int err = dx + dy, e2;
-    while (1) {
+    for (;;) {
         draw_pixel(x0, y0, color);
         if (x0 == x1 && y0 == y1) break;
         e2 = 2 * err;
@@ -128,7 +108,7 @@ void draw_text(int x, int y, u32 color, const char *fmt, ...) {
 }
 
 void draw_text_center(int y, u32 color, const char *text) {
-    int w = strlen(text) * 8;
+    int w = (int)strlen(text) * 8;
     draw_text((SCREEN_WIDTH - w) / 2, y, color, "%s", text);
 }
 
@@ -155,7 +135,7 @@ void draw_text_large(int x, int y, u32 color, const char *text) {
 }
 
 int text_width(const char *text) {
-    return strlen(text) * 8;
+    return (int)strlen(text) * 8;
 }
 
 void draw_scrollbar(int x, int y, int h, int total, int visible, int offset) {
