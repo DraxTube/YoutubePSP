@@ -12,27 +12,29 @@
 #include <string.h>
 #include <stdlib.h>
 
-#define RING_BUFFER_SIZE   (512 * 1024)
-#define RING_PACKETS       (RING_BUFFER_SIZE / 2048)
-#define MPEG_BUF_SIZE      (64 * 1024)
-#define AUDIO_SAMPLES      512
-#define TMP_FILE           "ms0:/PSP/GAME/PSPTube/tmp_video.mp4"
+#define RING_BUFFER_SIZE  (512 * 1024)
+#define RING_PACKETS      (RING_BUFFER_SIZE / 2048)
+#define MPEG_BUF_SIZE     (64 * 1024)
+#define AUDIO_SAMPLES     512
+#define TMP_FILE          "ms0:/PSP/GAME/PSPTube/tmp_video.mp4"
 
-static u8 __attribute__((aligned(64))) g_ring_data[RING_BUFFER_SIZE];
-static u8 __attribute__((aligned(64))) g_mpeg_buf[MPEG_BUF_SIZE];
+/* Framebuffer per il video: 480x272 ABGR */
+static u32 __attribute__((aligned(64))) g_frame_buf[512 * 272];
+static u8  __attribute__((aligned(64))) g_ring_data[RING_BUFFER_SIZE];
+static u8  __attribute__((aligned(64))) g_mpeg_buf[MPEG_BUF_SIZE];
 
-/* Ring buffer callback: called by sceMpeg to fill packets from file */
+/* Ring buffer callback */
 static SceInt32 ring_callback(ScePVoid pData, SceInt32 iNumPackets, ScePVoid pParam) {
     FILE *f = (FILE*)pParam;
-    int bytes = iNumPackets * 2048;
-    int n = fread(pData, 1, bytes, f);
-    return n / 2048;
+    int n = fread(pData, 2048, iNumPackets, f);
+    return (SceInt32)n;
 }
 
-/* Download video to Memory Stick */
+/* Download su Memory Stick */
 static int download_video(const char *url) {
     char chunk[8192];
-    int template_id, conn_id, req_id, status, ret;
+    int template_id, conn_id, req_id, status;
+    int ret = -1;
 
     template_id = sceHttpCreateTemplate("PSPTube/1.0", 1, 1);
     if (template_id < 0) return template_id;
@@ -42,7 +44,11 @@ static int download_video(const char *url) {
     if (conn_id < 0) { sceHttpDeleteTemplate(template_id); return conn_id; }
 
     req_id = sceHttpCreateRequestWithURL(conn_id, PSP_HTTP_METHOD_GET, (char*)url, 0);
-    if (req_id < 0) { sceHttpDeleteConnection(conn_id); sceHttpDeleteTemplate(template_id); return req_id; }
+    if (req_id < 0) {
+        sceHttpDeleteConnection(conn_id);
+        sceHttpDeleteTemplate(template_id);
+        return req_id;
+    }
 
     ret = sceHttpSendRequest(req_id, NULL, 0);
     if (ret < 0) goto dl_cleanup;
@@ -61,8 +67,8 @@ static int download_video(const char *url) {
             fwrite(chunk, 1, n, f);
             total += n;
 
-            if ((total % (64 * 1024)) == 0) {
-                char msg[64];
+            if ((total & 0xFFFF) == 0) {   /* ogni ~64KB */
+                char msg[48];
                 snprintf(msg, sizeof(msg), "Download: %d KB", total / 1024);
                 graphics_clear(COLOR_PSPTUBE);
                 ui_draw_header("PSPTube - Download");
@@ -85,7 +91,7 @@ dl_cleanup:
 int video_play(const char *url, const VideoInfo *info) {
     int ret;
 
-    /* Step 1: download */
+    /* 1. Download */
     ui_draw_message("Download video...", COLOR_WHITE);
     ret = download_video(url);
     if (ret <= 0) {
@@ -94,7 +100,7 @@ int video_play(const char *url, const VideoInfo *info) {
         return -1;
     }
 
-    /* Step 2: open file */
+    /* 2. Apri file */
     FILE *f = fopen(TMP_FILE, "rb");
     if (!f) {
         ui_draw_message("Impossibile aprire il file.", COLOR_RED);
@@ -102,19 +108,20 @@ int video_play(const char *url, const VideoInfo *info) {
         return -1;
     }
 
-    /* Step 3: init MPEG */
+    /* 3. Init MPEG */
     ret = sceMpegInit();
     if (ret < 0) { fclose(f); return ret; }
 
     SceMpegRingbuffer ringbuf;
     ret = sceMpegRingbufferConstruct(&ringbuf, RING_PACKETS,
-                                     g_ring_data, RING_BUFFER_SIZE,
-                                     ring_callback, f);
+                                     (ScePVoid)g_ring_data, RING_BUFFER_SIZE,
+                                     ring_callback, (ScePVoid)f);
     if (ret < 0) { sceMpegFinish(); fclose(f); return ret; }
 
     SceMpeg mpeg;
-    memset(g_mpeg_buf, 0, sizeof(g_mpeg_buf));
-    ret = sceMpegCreate(&mpeg, g_mpeg_buf, MPEG_BUF_SIZE, &ringbuf, RING_PACKETS, 0, 0);
+    memset(g_mpeg_buf, 0, MPEG_BUF_SIZE);
+    ret = sceMpegCreate(&mpeg, g_mpeg_buf, MPEG_BUF_SIZE,
+                        &ringbuf, RING_PACKETS, 0, 0);
     if (ret < 0) {
         sceMpegRingbufferDestruct(&ringbuf);
         sceMpegFinish();
@@ -122,30 +129,27 @@ int video_play(const char *url, const VideoInfo *info) {
         return ret;
     }
 
-    /* Feed initial data */
+    /* 4. Riempi ring buffer iniziale */
     {
         int avail = sceMpegRingbufferAvailableSize(&ringbuf);
         if (avail > 0) sceMpegRingbufferPut(&ringbuf, avail, avail);
     }
 
-    /* Get stream info */
-    SceInt32 stream_offset = 0;
-    sceMpegQueryStreamOffset(&mpeg, g_ring_data, &stream_offset);
+    /* 5. Registra stream video (AVC=0xe0) e audio (ATRAC=0) */
+    SceMpegStream *vstream = sceMpegRegistStream(&mpeg, 0xe0, 0);
+    SceMpegStream *astream = sceMpegRegistStream(&mpeg, 0,    0);
 
-    SceMpegStream *vstream = sceMpegGetAtracEsStream(&mpeg);  /* video */
-    SceMpegStream *astream = sceMpegGetAvcEsStream(&mpeg);    /* audio */
-
-    /* Audio */
+    /* 6. Audio */
     int audio_ch = sceAudioChReserve(PSP_AUDIO_NEXT_CHANNEL, AUDIO_SAMPLES,
                                      PSP_AUDIO_FORMAT_STEREO);
+
+    static s16 __attribute__((aligned(64))) pcm[AUDIO_SAMPLES * 2];
 
     SceCtrlData pad, old_pad;
     memset(&old_pad, 0, sizeof(old_pad));
     int paused = 0, show_info = 1, info_timer = 180;
 
-    ui_draw_message("Riproduzione...", COLOR_WHITE);
-
-    /* Playback loop */
+    /* 7. Loop di riproduzione */
     while (1) {
         sceCtrlReadBufferPositive(&pad, 1);
         unsigned int pressed = pad.Buttons & ~old_pad.Buttons;
@@ -157,52 +161,69 @@ int video_play(const char *url, const VideoInfo *info) {
 
         if (paused) { sceKernelDelayThread(16000); continue; }
 
-        /* Refill ring buffer */
+        /* Riempi ring buffer */
         {
             int avail = sceMpegRingbufferAvailableSize(&ringbuf);
             if (avail > 0) sceMpegRingbufferPut(&ringbuf, avail, avail);
         }
 
-        /* Decode & display one AVC frame */
+        /* Decode video */
         if (vstream) {
             SceMpegAu au;
+            au.iPts      = 0;
+            au.iDts      = 0;
+            au.iEsBuffer = 0;
+            au.iAuSize   = 0;
+
             ret = sceMpegGetAvcAu(&mpeg, vstream, &au, NULL);
-            if (ret < 0) break;
-
-            /* Decode into display buffer directly */
-            void *yuv_buf = NULL;
-            ret = sceMpegAvcDecodeMode(&mpeg, NULL);
-            ret = sceMpegAvcDecode(&mpeg, &au, 512, NULL, &yuv_buf);
-            if (ret < 0) break;
-
-            sceMpegAvcDecodeFlush(&mpeg);
+            if (ret == 0) {
+                SceInt32 init = 0;
+                sceMpegAvcDecode(&mpeg, &au, 512,
+                                 (ScePVoid)g_frame_buf, &init);
+                if (init) {
+                    /* Blit g_frame_buf → display tramite GU/display diretto */
+                    sceDisplaySetFrameBuf((void*)g_frame_buf, 512,
+                                         PSP_DISPLAY_PIXEL_FORMAT_8888,
+                                         PSP_DISPLAY_SETBUF_NEXTFRAME);
+                }
+            } else if (ret < 0) {
+                break; /* fine stream */
+            }
         }
 
         /* Decode audio */
         if (astream && audio_ch >= 0) {
-            static s16 __attribute__((aligned(64))) pcm[AUDIO_SAMPLES * 2];
             SceMpegAu au;
+            au.iPts      = 0;
+            au.iDts      = 0;
+            au.iEsBuffer = 0;
+            au.iAuSize   = 0;
+
             ret = sceMpegGetAtracAu(&mpeg, astream, &au, NULL);
             if (ret == 0) {
-                sceMpegAtracDecode(&mpeg, &au, pcm, 0);
-                sceAudioOutputPannedBlocking(audio_ch,
+                sceMpegAtracDecode(&mpeg, &au, (ScePVoid)pcm, 0);
+                sceAudioOutputPannedBlocking(
+                    audio_ch,
                     g_config.volume * PSP_AUDIO_VOLUME_MAX / 100,
                     g_config.volume * PSP_AUDIO_VOLUME_MAX / 100,
                     pcm);
             }
         }
 
+        /* Info overlay */
         if (show_info) {
             ui_draw_video_info(info);
             if (--info_timer <= 0) show_info = 0;
         }
 
-        graphics_flip();
         sceDisplayWaitVblankStart();
     }
 
-    /* Cleanup */
+    /* 8. Cleanup */
+    if (vstream) sceMpegUnRegistStream(&mpeg, vstream);
+    if (astream) sceMpegUnRegistStream(&mpeg, astream);
     if (audio_ch >= 0) sceAudioChRelease(audio_ch);
+    sceMpegAvcDecodeStop(&mpeg, 512, (ScePVoid)g_frame_buf, NULL);
     sceMpegDelete(&mpeg);
     sceMpegRingbufferDestruct(&ringbuf);
     sceMpegFinish();
