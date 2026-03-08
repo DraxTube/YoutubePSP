@@ -6,6 +6,7 @@
 #include <psputility.h>
 #include <psphttp.h>
 #include <pspssl.h>
+#include <pspwlan.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -15,14 +16,18 @@ static int g_connected = 0;
 int network_init(void) {
     int ret;
 
+    /* Controlla switch WLAN fisico */
+    if (sceWlanGetSwitchState() == 0)
+        return -0xDEAD; /* switch spento */
+
     ret = sceNetInit(128 * 1024, 42, 4096, 42, 4096);
     if (ret < 0) return ret;
 
     ret = sceNetInetInit();
-    if (ret < 0) return ret;
+    if (ret < 0) { sceNetTerm(); return ret; }
 
     ret = sceNetApctlInit(0x8000, 48);
-    if (ret < 0) return ret;
+    if (ret < 0) { sceNetInetTerm(); sceNetTerm(); return ret; }
 
     ret = sceHttpInit(256 * 1024);
     if (ret < 0) return ret;
@@ -36,6 +41,7 @@ int network_init(void) {
 
 void network_shutdown(void) {
     if (!g_net_init) return;
+    if (g_connected) sceNetApctlDisconnect();
     sceSslEnd();
     sceHttpEnd();
     sceNetApctlTerm();
@@ -45,24 +51,30 @@ void network_shutdown(void) {
     g_connected = 0;
 }
 
+/* Prova tutti e 3 gli slot WiFi salvati sulla PSP */
 int network_connect(void) {
-    int ret, state;
-    int timeout = 0;
+    int slot, ret, state, timeout;
 
-    ret = sceNetApctlConnect(1);
-    if (ret < 0) return ret;
+    for (slot = 1; slot <= 3; slot++) {
+        ret = sceNetApctlConnect(slot);
+        if (ret < 0) continue; /* slot vuoto, prova il prossimo */
 
-    while (timeout < 30) {
-        ret = sceNetApctlGetState(&state);
-        if (ret < 0) break;
-        if (state == PSP_NET_APCTL_STATE_GOT_IP) {
-            g_connected = 1;
-            return 0;
+        timeout = 0;
+        while (timeout < 60) { /* 30 secondi max per slot */
+            ret = sceNetApctlGetState(&state);
+            if (ret < 0) break;
+            if (state == PSP_NET_APCTL_STATE_GOT_IP) {
+                g_connected = 1;
+                return slot; /* ritorna lo slot usato */
+            }
+            sceKernelDelayThread(500000); /* 0.5s */
+            timeout++;
         }
+        /* timeout su questo slot, disconnetti e prova il prossimo */
+        sceNetApctlDisconnect();
         sceKernelDelayThread(500000);
-        timeout++;
     }
-    return -1;
+    return -1; /* nessuno slot funziona */
 }
 
 int network_disconnect(void) {
@@ -82,7 +94,7 @@ int http_get(const char *url, char *buf, int buf_size) {
     template_id = sceHttpCreateTemplate("PSPTube/1.0", 1, 1);
     if (template_id < 0) return template_id;
 
-    sceHttpSetResolveTimeOut(template_id, 3000000);
+    sceHttpSetResolveTimeOut(template_id, 5000000);
     sceHttpSetRecvTimeOut(template_id, 10000000);
     sceHttpSetSendTimeOut(template_id, 10000000);
 
@@ -125,8 +137,8 @@ void url_encode(const char *src, char *dst, int dst_size) {
     int i = 0;
     while (*src && i < dst_size - 4) {
         unsigned char c = (unsigned char)*src++;
-        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-            (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~') {
+        if ((c>='A'&&c<='Z')||(c>='a'&&c<='z')||
+            (c>='0'&&c<='9')||c=='-'||c=='_'||c=='.'||c=='~') {
             dst[i++] = c;
         } else {
             dst[i++] = '%';
